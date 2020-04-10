@@ -20,5 +20,6 @@ spec:
   severity: high
   parameters:
     mode: "whitelist"
+    match: "excact"
     instances:
       - //compute.googleapis.com/projects/torbital-signal-243013/zones/europe-west1-b/instances/vm-thisoneallowed
