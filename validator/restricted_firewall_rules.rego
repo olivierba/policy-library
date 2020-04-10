@@ -1,5 +1,5 @@
 #
-# Copyright 2019 Google LLC
+# Copyright 2020 Google LLC
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -27,13 +27,15 @@ deny[{
 
 	# Update params (set all missing params to their default value)
 	rules_params := update_params(params.rules[_])
+	mode := lib.get_default(params, "mode", "denylist")
 
 	asset := input.asset
 	asset.asset_type == "compute.googleapis.com/Firewall"
 
 	fw_rule = asset.resource.data
 
-	fw_rule_is_restricted(fw_rule, rules_params)
+	is_valid(mode, fw_rule, rules_params)
+
 	message := sprintf("%s Firewall rule is prohibited.", [asset.name])
 	metadata := {
 		"resource": asset.name,
@@ -63,24 +65,34 @@ update_params(params) = updated_params {
 	}
 }
 
+is_valid(mode, fw_rule, params) {
+	mode == "denylist"
+	fw_rule_is_restricted(fw_rule, params)
+}
+
+is_valid(mode, fw_rule, params) {
+	mode == "allowlist"
+	not fw_rule_is_restricted(fw_rule, params)
+}
+
 # fw_rule_is_restricted for Ingress rules
 fw_rule_is_restricted(fw_rule, params) {
 	# check direction
 	fw_rule_check_direction(fw_rule, params.direction)
 
 	# check rule type
-fw_rule_check_rule_type(	fw_rule, params.rule_type)
+	fw_rule_check_rule_type(fw_rule, params.rule_type)
 
 	ip_configs := fw_rule_get_ip_configs(fw_rule, params.rule_type)
 
 	# check protocol and port
-fw_rule_check_protocol_and_port(	ip_configs, params.protocol, params.port)
+	fw_rule_check_protocol_and_port(ip_configs, params.protocol, params.port)
 
 	# Check sources (ip ranges and/or tags and/or service accounts)
-fw_rule_check_all_sources(	fw_rule, params)
+	fw_rule_check_all_sources(fw_rule, params)
 
 	# Check targets
-fw_rule_check_all_targets(	fw_rule, params)
+	fw_rule_check_all_targets(fw_rule, params)
 
 	fw_rule_check_enabled(fw_rule, params.enabled)
 }
@@ -154,7 +166,7 @@ fw_rule_check_protocol_and_port(ip_configs, protocol, port) {
 	ip_configs[i].IPProtocol == protocol
 
 	# Check if the associated port is also a match
-fw_rule_check_port(	ip_configs[i], port)
+	fw_rule_check_port(ip_configs[i], port)
 }
 
 # fw_rule_check_port when protocol is set to any
@@ -170,11 +182,36 @@ fw_rule_check_port(ip_config, port) {
 	ip_config.IPProtocol == protocol_with_ports[_]
 
 	# if port is not set in ip_config, any port passed as a param matches
-not 	ip_config.ports
+	not ip_config.ports
+}
+
+# fw_rule_check_port when port is all and there are no ports
+fw_rule_check_port(ip_config, port) {
+	port == "all"
+
+	# check if the port matches
+	not ip_config.ports
+}
+
+# fw_rule_check_port when port is all and the fw rule exposes ports 0-65535
+fw_rule_check_port(ip_config, port) {
+	port == "all"
+
+	# check if the port matches
+	range_match("0-65535", ip_config.ports[_])
+}
+
+# fw_rule_check_port when port is all and the fw rule exposes ports 1-65535
+fw_rule_check_port(ip_config, port) {
+	port == "all"
+
+	# check if the port matches
+	range_match("1-65535", ip_config.ports[_])
 }
 
 # fw_rule_check_port when port is a single number
 fw_rule_check_port(ip_config, port) {
+	port != "all"
 	port != "any"
 	not re_match("-", port)
 
@@ -182,11 +219,12 @@ fw_rule_check_port(ip_config, port) {
 	rule_ports := ip_config.ports
 
 	# check if port is in one of rule_ports values
-port_is_in_values(	port, rule_ports[_])
+	port_is_in_values(port, rule_ports[_])
 }
 
 # fw_rule_check_port when port is a range (e.g 100-200)
 fw_rule_check_port(ip_config, port) {
+	port != "all"
 	port != "any"
 	re_match("-", port)
 
@@ -197,7 +235,7 @@ fw_rule_check_port(ip_config, port) {
 
 	# check if port range is included in one of rule_ports values
 	# Note: if rule_port is not a range, range_match will return False
-range_match(	port, rule_port)
+	range_match(port, rule_port)
 }
 
 # port_is_in_values if rule_port is not a range
@@ -220,7 +258,7 @@ port_is_in_values(port, rule_port) {
 	port_range := sprintf("%s-%s", [port, port])
 
 	# Check if port is included in rule port
-range_match(	port_range, rule_port)
+	range_match(port_range, rule_port)
 }
 
 # range_match tests if test_range is included in target_range
@@ -230,7 +268,7 @@ range_match(test_range, target_range) {
 	re_match("-", target_range)
 
 	# check if test_range is a range
-re_match(	"-", test_range)
+	re_match("-", test_range)
 
 	# getting the target range bounds
 	target_range_bounds := split(target_range, "-")
@@ -293,7 +331,7 @@ fw_rule_check_source_tag(fw_rule, source_tag) {
 	fw_rule_source_tags := fw_rule.sourceTags
 
 	# check if the input tag matches any tag in the rule
-re_match(	source_tag, fw_rule_source_tags[_])
+	re_match(source_tag, fw_rule_source_tags[_])
 }
 
 # fw_rule_check_source_tag if source tag is set to "*"
@@ -317,7 +355,7 @@ fw_rule_check_source_sas(fw_rule, source_service_account) {
 	fw_rule_source_sas = fw_rule.sourceServiceAccounts
 
 	# check if the rule service account matches
-re_match(	source_service_account, fw_rule_source_sas[_])
+	re_match(source_service_account, fw_rule_source_sas[_])
 }
 
 # fw_rule_check_source_sas if source service account is set to "*"
@@ -378,7 +416,7 @@ fw_rule_check_target_tag(fw_rule, target_tag) {
 	fw_rule_target_tags := fw_rule.targetTags
 
 	# check if the input tag matches any tag in the rule
-re_match(	target_tag, fw_rule_target_tags[_])
+	re_match(target_tag, fw_rule_target_tags[_])
 }
 
 # fw_rule_check_target_tag if target tag is set to "*"
@@ -402,7 +440,7 @@ fw_rule_check_target_sas(fw_rule, target_service_account) {
 	fw_rule_target_sas = fw_rule.targetServiceAccounts
 
 	# check if the rule service account matches
-re_match(	target_service_account, fw_rule_target_sas[_])
+	re_match(target_service_account, fw_rule_target_sas[_])
 }
 
 # fw_rule_check_target_sas if target service account is set to "*"
@@ -430,7 +468,7 @@ fw_rule_check_enabled(fw_rule, enabled) {
 	enabled != "any"
 
 	# the following test only works when enabled is a boolean too
-is_boolean(	enabled)
+	is_boolean(enabled)
 	enabled != fw_rule.disabled
 }
 
